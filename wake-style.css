@@ -1,0 +1,62 @@
+@page {
+  size: Letter;
+  /* Generous margins to match the framing in the screenshot */
+  margin: 2in 1.5in 2in 1.5in;
+}
+
+body {
+  /* Standard Courier actually matches the game's font spacing better */
+  font-family: "Courier Prime", Courier, "Courier New", monospace;
+  font-size: 11pt;
+  line-height: 2.2;
+  color: #111111; /* Very dark grey, almost black */
+
+  /* THE CRITICAL FIX: Justified text with automatic hyphenation */
+  text-align: justify;
+  hyphens: auto;
+
+  /* Slight blur to simulate typewriter ink on rough paper */
+  text-shadow: 0px 0px 0.5px rgba(0, 0, 0, 0.3);
+}
+
+p {
+  /* 0.5 inch indent, plus a full line break between paragraphs */
+  text-indent: 0.5in;
+  margin-top: 0;
+  margin-bottom: 2.2em;
+}
+
+/* For Alan's heavy bolding (even though this specific page doesn't have any) */
+strong {
+  font-weight: bold;
+  text-shadow: 0px 0px 1px rgba(0, 0, 0, 0.6);
+}
+
+/* Metadata block styling - Added for Pandoc YAML frontmatter support */
+header#title-block-header {
+  margin-bottom: 2em;
+  text-align: center;
+}
+
+header#title-block-header h1.title {
+  font-size: 14pt;
+  margin-bottom: 0.5em;
+  text-indent: 0; /* Override paragraph indent */
+  text-align: center;
+  text-transform: uppercase;
+  font-weight: bold;
+}
+
+header#title-block-header p.author {
+  font-size: 12pt;
+  margin-bottom: 0.2em;
+  text-indent: 0; /* Override paragraph indent */
+  text-align: center;
+  font-style: italic;
+}
+
+header#title-block-header p.date {
+  font-size: 11pt;
+  text-indent: 0; /* Override paragraph indent */
+  text-align: center;
+}
