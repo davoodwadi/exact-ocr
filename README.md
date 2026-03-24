@@ -92,7 +92,7 @@ python ocr/transcribe_qwen.py document.pdf -t
 
 ## Batch Processing
 
-If you have a directory filled with PDFs, you can use the included bash script `pdf_to_markdown.sh` to batch-process all of them sequentially.
+If you have a directory filled with PDFs, you can use the included bash script `pdf_to_markdown.sh` to batch-process all of them in a single transcription run.
 
 The script automatically searches the current directory for any `.pdf` files and passes them to `transcribe_qwen.py`.
 

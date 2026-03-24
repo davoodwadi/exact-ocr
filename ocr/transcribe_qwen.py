@@ -83,11 +83,15 @@ def start_llama_cpp_server():
         os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
         "-m", f"{cache_dir}/{MODEL_NAME}-GGUF/{MODEL_NAME}-UD-Q4_K_XL.gguf",
         "--mmproj", f"{cache_dir}/{MODEL_NAME}-GGUF/mmproj-BF16.gguf",
-        "--port", str(LCPP_PORT)
+        "--port", str(LCPP_PORT),
+        "--parallel", "4",
     ]
     
-    # Start process in background, allowing stderr to print to console so user can see server crashes
-    lcpp_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=sys.stderr)
+    # Redirect server logs to a file to avoid cluttering the terminal
+    lcpp_log_path = Path(f"/tmp/llama-server-{LCPP_PORT}.log")
+    lcpp_log_file = open(lcpp_log_path, "w")
+    print(f"llama-server logs → {lcpp_log_path}")
+    lcpp_process = subprocess.Popen(cmd, env=env, stdout=lcpp_log_file, stderr=lcpp_log_file)
     
     # Wait for server to be ready
     openai_client = OpenAI(base_url=f"http://localhost:{LCPP_PORT}/v1", api_key="EMPTY")

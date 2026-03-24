@@ -121,7 +121,7 @@ echo "=================================================="
 echo ""
 printf '  %s\n' "${selected[@]}"
 echo ""
-"$PYTHON_EXE" "$SCRIPT_PATH" "${selected[@]}" "${PASSTHROUGH[@]}"
+"$PYTHON_EXE" "$SCRIPT_PATH" "${PASSTHROUGH[@]}" -- "${selected[@]}"
 status=$?
 
 # ---------------------------------------------------------------------------
