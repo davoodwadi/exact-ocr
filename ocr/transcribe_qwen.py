@@ -5,7 +5,10 @@ import fitz  # PyMuPDF
 import mimetypes
 import gc
 import torch
-from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
+import os
+
+# To help avoid fragmentation and out of memory issues
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 from pathlib import Path
 import argparse
 import subprocess
@@ -44,10 +47,15 @@ structured_outputs_params = StructuredOutputsParams(json=json_schema)
 
 # Global states
 llm = None
-vllm_process = None
+lcpp_process = None
 openai_client = None
-VLLM_PORT = 8000
-MODEL_NAME = "Qwen/Qwen3.5-9B"
+LCPP_PORT = 8080
+
+MODEL_NAME = 'Qwen3.5-35B-A3B'
+# MODEL_NAME = 'Qwen3.5-0.8B'
+
+max_model_length = 20000
+max_tokens = 16000
 
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -59,32 +67,32 @@ def find_free_port(start_port=8000):
         port += 1
     return port
 
-def start_vllm_server():
-    global vllm_process, openai_client, VLLM_PORT, MODEL_NAME
+def start_llama_cpp_server():
+    global lcpp_process, openai_client, LCPP_PORT
     
-    if vllm_process is not None:
+    if lcpp_process is not None:
         return
         
-    VLLM_PORT = find_free_port(8000)
-    print(f"Starting VLLM server on port {VLLM_PORT} for model {MODEL_NAME}...")
+    LCPP_PORT = find_free_port(8080)
     
+    print(f"Starting llama-server on port {LCPP_PORT} for model {MODEL_NAME}...")
+
+    env = os.environ.copy()
+    cache_dir = os.environ.get('LLAMA_CACHE')
     cmd = [
-        sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-        "--model", MODEL_NAME,
-        "--tensor-parallel-size", "1",
-        "--max-model-len", "32000",
-        "--gpu-memory-utilization", "0.7",
-        "--trust-remote-code",
-        "--port", str(VLLM_PORT)
+        os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
+        "-m", f"{cache_dir}/{MODEL_NAME}-GGUF/{MODEL_NAME}-UD-Q4_K_XL.gguf",
+        "--mmproj", f"{cache_dir}/{MODEL_NAME}-GGUF/mmproj-BF16.gguf",
+        "--port", str(LCPP_PORT)
     ]
     
     # Start process in background, allowing stderr to print to console so user can see server crashes
-    vllm_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=sys.stderr)
+    lcpp_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=sys.stderr)
     
     # Wait for server to be ready
-    openai_client = OpenAI(base_url=f"http://localhost:{VLLM_PORT}/v1", api_key="EMPTY")
+    openai_client = OpenAI(base_url=f"http://localhost:{LCPP_PORT}/v1", api_key="EMPTY")
     
-    print("Waiting for VLLM server to be ready...")
+    print("Waiting for llama-server to be ready...")
     max_retries = 60 # 2 minutes
     ready = False
     for i in range(max_retries):
@@ -94,31 +102,31 @@ def start_vllm_server():
             ready = True
             break
         except Exception:
-            if vllm_process.poll() is not None:
-                print("VLLM server process terminated unexpectedly.")
+            if lcpp_process.poll() is not None:
+                print("llama-server process terminated unexpectedly.")
                 sys.exit(1)
             time.sleep(4)
             
     if not ready:
-        print("VLLM server failed to start within the timeout period.")
-        stop_vllm_server()
+        print("llama-server failed to start within the timeout period.")
+        stop_llama_cpp_server()
         sys.exit(1)
         
-    print("VLLM server is ready!")
+    print("llama-server is ready!")
 
-def stop_vllm_server():
-    global vllm_process
-    if vllm_process is not None:
-        print("Stopping VLLM server...")
-        vllm_process.terminate()
+def stop_llama_cpp_server():
+    global lcpp_process
+    if lcpp_process is not None:
+        print("Stopping llama-server...")
+        lcpp_process.terminate()
         try:
-            vllm_process.wait(timeout=10)
+            lcpp_process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            vllm_process.kill()
-        vllm_process = None
+            lcpp_process.kill()
+        lcpp_process = None
 
 # Register cleanup on exit
-atexit.register(stop_vllm_server)
+atexit.register(stop_llama_cpp_server)
 
 def init_llm():
     global llm, MODEL_NAME
@@ -127,8 +135,9 @@ def init_llm():
         llm = LLM(
             model=MODEL_NAME,
             tensor_parallel_size=1,
-            max_model_len=32_000,
-            gpu_memory_utilization=0.8,
+            max_model_len=max_model_length, # Reduced from 32000
+            gpu_memory_utilization=0.85,
+            enforce_eager=True, # Save memory by not using CUDA graph
             trust_remote_code=True,
             # reasoning_parser="qwen3"
         )
@@ -196,7 +205,7 @@ def smart_join_pages(pages):
         page = page.strip()
         if not page: continue
         
-        merged_text+=f'\n\n**Page: {i}**\n\n'
+        # merged_text+=f'\n\n# **Page: {i}**\n\n'
 
         # Check if the previous page ended with a hyphen (split word)
         if merged_text.endswith("-"):
@@ -245,8 +254,6 @@ def cleanup_llm():
     global llm
     if llm is not None:
         try:
-            destroy_model_parallel()
-            destroy_distributed_environment()
             del llm
             gc.collect()
             torch.cuda.empty_cache()
@@ -272,7 +279,6 @@ def get_text_image(doc):
             break
     return full_text_for_metadata, first_page_image
 
-
 def extract_metadata_python_api(text, image):
     """
     Extracts metadata from the text using the Python API.
@@ -285,7 +291,7 @@ def extract_metadata_python_api(text, image):
         min_p=0.0,
         presence_penalty=2.0,
         repetition_penalty=1.0,
-        max_tokens=20_000,
+        max_tokens=max_tokens,
         structured_outputs=structured_outputs_params
     )
     system_prompt = 'Extract the metadata from the user text. Exactly follow the json schema for your output.'
@@ -349,7 +355,6 @@ def extract_metadata_openai_api(text, image):
                 "json_schema": {
                     "name": "Metadata",
                     "schema": json_schema,
-                    # "strict": False
                 }
             },
             temperature=0.7,
@@ -357,9 +362,10 @@ def extract_metadata_openai_api(text, image):
             presence_penalty=2.0,
             extra_body={
                 "top_k": 40,
-                "repetition_penalty": 1.0
+                "repetition_penalty": 1.0,
+                "chat_template_kwargs": {"enable_thinking": False},
             },
-            max_tokens=16_000,
+            max_tokens=max_tokens,
         )
         generated_text = response.choices[0].message.content.strip()
         # print('generated_text metadata', generated_text)            
@@ -381,7 +387,7 @@ def transcribe_pages_python_api(messages_batch, input_path):
         top_p=0.8,
         presence_penalty=1.5,
         top_k=20,
-        max_tokens=16768
+        max_tokens=max_tokens
     )
     outputs = []
     for message in tqdm(messages_batch, desc=f"Transcribing {input_path.name}"):
@@ -406,14 +412,16 @@ def transcribe_single_page_openai(message):
         response = openai_client.chat.completions.create(
             model=MODEL_NAME,
             messages=message,
-            max_tokens=16768,
+            max_tokens=max_tokens,
             temperature=0.7,
             top_p=0.8,
             presence_penalty=1.5,
             extra_body={
                 "top_k": 20,
+                # "chat_template_kwargs": {"enable_thinking": False},
             },
         )
+        print(response.choices[0].message.content)
         return response.choices[0].message.content
     except Exception as e:
         error_msg = str(e)
@@ -471,9 +479,9 @@ if __name__ == "__main__":
                     if args.python_api:
                         init_llm()
                     else:
-                        start_vllm_server()
+                        start_llama_cpp_server()
                 except Exception as e:
-                    print(f"Failed to initialize VLLM: {e}")
+                    print(f"Failed to initialize server: {e}")
                     sys.exit(1)
 
             # Guess the MIME type based on extension
@@ -523,13 +531,20 @@ if __name__ == "__main__":
                             transcribed_texts.append(page_text)
                         else:
                             # Render page to image (zoom=3 for high resolution ~216 DPI)
-                            zoom = 3.0
+                            zoom = 2.0
                             mat = fitz.Matrix(zoom, zoom)
                             pix = page.get_pixmap(matrix=mat)
+                            # --- NEW CODE: Save a sample of the first page ---
+                            if i == 0:
+                                sample_path = f"sample_page_{i+1}_resolution.png"
+                                pix.save(sample_path)
+                                print(f"Saved resolution sample to {sample_path}")
+                            # ---------------------------------
                             img_bytes = pix.tobytes("png")
                             
                             # Encode bytes directly without saving to disk
                             base64_img = base64.b64encode(img_bytes).decode('utf-8')
+                            # print('Size of image:', len(base64_img))
                             
                             # Prepare message for this page
                             messages = prepare_page_messages(base64_img, "image/png", extracted_images=page_images)
@@ -568,9 +583,9 @@ if __name__ == "__main__":
                             if args.python_api:
                                 init_llm()
                             else:
-                                start_vllm_server()
+                                start_llama_cpp_server()
                         except Exception as e:
-                            print(f"Failed to initialize VLLM: {e}")
+                            print(f"Failed to initialize server: {e}")
                             sys.exit(1)
                             
                     if args.python_api:

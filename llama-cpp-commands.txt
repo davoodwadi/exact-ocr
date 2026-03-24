@@ -1,0 +1,14 @@
+~/llama.cpp/build/bin/llama-server \
+    -m $LLAMA_CACHE/{MODEL_NAME}-GGUF/{MODEL_NAME}-UD-Q4_K_XL.gguf \
+    --mmproj $LLAMA_CACHE/{MODEL_NAME}-GGUF/mmproj-BF16.gguf \
+
+
+~/llama.cpp/build/bin/llama-server \
+    -m $LLAMA_CACHE/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-UD-Q4_K_XL.gguf \
+    --mmproj $LLAMA_CACHE/Qwen3.5-0.8B-GGUF/mmproj-BF16.gguf \
+    
+~/llama.cpp/build/bin/llama-server \
+    -m $LLAMA_CACHE/Qwen3.5-35B-A3B-GGUF/Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf \
+    --mmproj $LLAMA_CACHE/Qwen3.5-35B-A3B-GGUF/mmproj-BF16.gguf \
+    
+

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Path to the virtual environment Python
-PYTHON_EXE="/home/dw/github/wake-manuscript/.venv/bin/python"
+PYTHON_EXE="/home/dw/github/pdf-to-markdown/.venv/bin/python"
 
 # Path to the transcription script
-SCRIPT_PATH="/home/dw/github/wake-manuscript/ocr/transcribe_qwen.py"
+SCRIPT_PATH="/home/dw/github/pdf-to-markdown/ocr/transcribe_qwen.py"
 
 # Check if there are any PDF files in the current directory
 count=$(ls -1 *.pdf 2>/dev/null | wc -l)
