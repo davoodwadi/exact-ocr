@@ -67,6 +67,6 @@ Key `fzf` flags:
 ---
 
 ## Open Questions
-- [ ] Should the markdown output live next to the PDF or in a centralised output directory?
+- [ ] Should the markdown output live next to the PDF or in a centralised output directory? Should live in the same directory as the pdf
 - [ ] Should already-converted files be listable via a `--show-done` flag?
 - [ ] Single-pass batch call vs. one call per PDF — check `transcribe_qwen.py` argument handling.

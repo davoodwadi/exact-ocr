@@ -421,7 +421,7 @@ def transcribe_single_page_openai(message):
                 # "chat_template_kwargs": {"enable_thinking": False},
             },
         )
-        print(response.choices[0].message.content)
+        # print(response.choices[0].message.content)
         return response.choices[0].message.content
     except Exception as e:
         error_msg = str(e)
