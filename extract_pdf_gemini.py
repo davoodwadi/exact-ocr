@@ -1,7 +1,7 @@
 import os
 import sys
 import argparse
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 from google import genai
 from google.genai import types
 
@@ -13,7 +13,7 @@ def extract_images(pdf_path, output_dir):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     image_map = {}
     
     print(f"Extracting images from {pdf_path}...")

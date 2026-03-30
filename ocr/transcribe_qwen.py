@@ -1,14 +1,10 @@
-from vllm import LLM, SamplingParams
 import base64
 import os
-import fitz  # PyMuPDF
+import pymupdf  
 import mimetypes
 import gc
-import torch
 import os
 
-# To help avoid fragmentation and out of memory issues
-os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 from pathlib import Path
 import argparse
 import subprocess
@@ -24,10 +20,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 
-from vllm.sampling_params import StructuredOutputsParams
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
-from pydantic import Field
 
 class Metadata(BaseModel):
     title: str = Field(description="Title of the paper")
@@ -42,8 +36,6 @@ try:
 except AttributeError:
     # Pydantic v1
     json_schema = Metadata.schema()
-
-structured_outputs_params = StructuredOutputsParams(json=json_schema)
 
 # Global states
 llm = None
@@ -67,14 +59,37 @@ def find_free_port(start_port=8000):
         port += 1
     return port
 
+def attach_existing_llama_cpp_server(port=8080):
+    """Check if a llama-server is already running on the given port and attach to it."""
+    global openai_client, LCPP_PORT, MODEL_NAME
+    if not is_port_in_use(port):
+        return False
+    try:
+        client = OpenAI(base_url=f"http://localhost:{port}/v1", api_key="EMPTY")
+        models = client.models.list()
+        running_model = models.data[0].id if models.data else None
+        if running_model:
+            print(f"Found existing llama-server on port {port} running model '{running_model}'. Attaching to it.")
+            LCPP_PORT = port
+            MODEL_NAME = running_model
+            openai_client = client
+            return True
+    except Exception:
+        pass
+    return False
+
 def start_llama_cpp_server():
     global lcpp_process, openai_client, LCPP_PORT
-    
+
     if lcpp_process is not None:
         return
-        
+
+    # Reuse an already-running server if available on the default port
+    if attach_existing_llama_cpp_server(8080):
+        return
+
     LCPP_PORT = find_free_port(8080)
-    
+
     print(f"Starting llama-server on port {LCPP_PORT} for model {MODEL_NAME}...")
 
     env = os.environ.copy()
@@ -132,19 +147,6 @@ def stop_llama_cpp_server():
 # Register cleanup on exit
 atexit.register(stop_llama_cpp_server)
 
-def init_llm():
-    global llm, MODEL_NAME
-    if llm is None:
-        print("Initializing VLLM...")
-        llm = LLM(
-            model=MODEL_NAME,
-            tensor_parallel_size=1,
-            max_model_len=max_model_length, # Reduced from 32000
-            gpu_memory_utilization=0.85,
-            enforce_eager=True, # Save memory by not using CUDA graph
-            trust_remote_code=True,
-            # reasoning_parser="qwen3"
-        )
 
 def encode_image(image_path):
     """Encodes a file from disk to base64."""
@@ -253,25 +255,13 @@ def extract_images_from_page(doc, page, page_index, output_dir="extracted_images
             
     return saved_images
 
-def cleanup_llm():
-    """Explicitly clean up VLLM resources."""
-    global llm
-    if llm is not None:
-        try:
-            del llm
-            gc.collect()
-            torch.cuda.empty_cache()
-            llm = None
-        except Exception as e:
-            print(f"Warning during cleanup: {e}")
-
 def get_text_image(doc):
     full_text_for_metadata = ''
     first_page_image = None
     for i, page in enumerate(doc):
         if i==0:
             zoom = 3.0
-            mat = fitz.Matrix(zoom, zoom)
+            mat = pymupdf.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=mat)
             img_bytes = pix.tobytes("png")
             # Encode bytes directly without saving to disk
@@ -282,54 +272,6 @@ def get_text_image(doc):
         if len(full_text_for_metadata) > 2000:
             break
     return full_text_for_metadata, first_page_image
-
-def extract_metadata_python_api(text, image):
-    """
-    Extracts metadata from the text using the Python API.
-    """
-    print("Extracting metadata (Title/Author) via Python API...")
-    sampling_params_json = SamplingParams(
-        temperature=0.7,
-        top_p=1.0,
-        top_k=40, 
-        min_p=0.0,
-        presence_penalty=2.0,
-        repetition_penalty=1.0,
-        max_tokens=max_tokens,
-        structured_outputs=structured_outputs_params
-    )
-    system_prompt = 'Extract the metadata from the user text. Exactly follow the json schema for your output.'
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user", 
-            "content": [
-                {
-                    "type": "text",
-                    "text": text
-                }
-            ]
-        },
-    ]
-    try:
-        outputs = llm.chat(
-            messages=messages, 
-            sampling_params=sampling_params_json,
-            chat_template_kwargs={"enable_thinking": False},
-            use_tqdm=False
-        )
-        generated_text = outputs[0].outputs[0].text.strip()
-        print('num_tokens:',len(outputs[0].outputs[0].token_ids))
-        if generated_text.startswith("```"):
-            lines = generated_text.split('\n')
-            if lines[0].startswith("```"): lines = lines[1:]
-            if lines and lines[-1].startswith("```"): lines = lines[:-1]
-            generated_text = "\n".join(lines).strip()
-            
-        return json.loads(generated_text)
-    except Exception as e:
-        print(f"Error extracting metadata: {e}")
-        return {}
 
 def extract_metadata_openai_api(text, image):
     """
@@ -384,33 +326,6 @@ def extract_metadata_openai_api(text, image):
         print(f"Error extracting metadata via OpenAI API: {error_msg}")
         return {}
 
-def transcribe_pages_python_api(messages_batch, input_path):
-    print(f"Running VLLM batch inference on {len(messages_batch)} pages (Python API)...")
-    sampling_params = SamplingParams(
-        temperature=0.7,
-        top_p=0.8,
-        presence_penalty=1.5,
-        top_k=20,
-        max_tokens=max_tokens
-    )
-    outputs = []
-    for message in tqdm(messages_batch, desc=f"Transcribing {input_path.name}"):
-        out = llm.chat(
-            messages=message, 
-            sampling_params=sampling_params, 
-            use_tqdm=False
-        )
-        outputs.append(out[0])
-        print('num_tokens:',len(out[0].outputs[0].token_ids))
-
-    transcribed_texts = []
-    for output in outputs:
-        generated_text = output.outputs[0].text
-        if "</think>" in generated_text:
-            generated_text = generated_text.split("</think>")[-1].strip()
-        transcribed_texts.append(generated_text)
-    return transcribed_texts
-
 def transcribe_single_page_openai(message):
     try:
         response = openai_client.chat.completions.create(
@@ -459,7 +374,6 @@ if __name__ == "__main__":
     parser.add_argument("-w", "--wake", type=bool, default=False, help="Should produce wake-style manuscript PDF file?")
     parser.add_argument('-m',"--max-pages", type=int, default=None, help="Maximum number of pages to process (for PDFs).")
     parser.add_argument('-f',"--force", action="store_true", help="Force retranscribe if md file exists")
-    parser.add_argument('-P', "--python-api", action="store_true", help="Use VLLM Python API instead of spinning up an OpenAI server")
     parser.add_argument('-t', "--text-only", action="store_true", help="Bypass LLM and extract raw text from PDF directly")
     args = parser.parse_args()
 
@@ -480,10 +394,7 @@ if __name__ == "__main__":
                 print('Transcribing')
                 # Init LLM early based on mode
                 try:
-                    if args.python_api:
-                        init_llm()
-                    else:
-                        start_llama_cpp_server()
+                    start_llama_cpp_server()
                 except Exception as e:
                     print(f"Failed to initialize server: {e}")
                     sys.exit(1)
@@ -500,17 +411,15 @@ if __name__ == "__main__":
             if mime_type == 'application/pdf':
                 print(f"Processing PDF: {input_path}")
                 try:
-                    doc = fitz.open(input_path)
+                    doc = pymupdf.open(input_path)
                     total_pages = args.max_pages if args.max_pages else len(doc)
 
                     if not args.text_only:
                         # Extract metadata using first 1000 chars of full text
                         print("Extracting text for metadata analysis...")
                         full_text_for_metadata, first_page_image = get_text_image(doc) 
-                        if args.python_api:
-                            metadata_dict = extract_metadata_python_api(text=full_text_for_metadata, image=first_page_image)
-                        else:
-                            metadata_dict = extract_metadata_openai_api(text=full_text_for_metadata, image=first_page_image)
+                        
+                        metadata_dict = extract_metadata_openai_api(text=full_text_for_metadata, image=first_page_image)
                             
                         clean_data = {k: v for k, v in metadata_dict.items() if v}
                         yaml_str = yaml.dump(clean_data, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -536,13 +445,13 @@ if __name__ == "__main__":
                         else:
                             # Render page to image (zoom=3 for high resolution ~216 DPI)
                             zoom = 2.0
-                            mat = fitz.Matrix(zoom, zoom)
+                            mat = pymupdf.Matrix(zoom, zoom)
                             pix = page.get_pixmap(matrix=mat)
                             # --- NEW CODE: Save a sample of the first page ---
-                            if i == 0:
-                                sample_path = f"sample_page_{i+1}_resolution.png"
-                                pix.save(sample_path)
-                                print(f"Saved resolution sample to {sample_path}")
+                            # if i == 0:
+                                # sample_path = f"sample_page_{i+1}_resolution.png"
+                                # pix.save(sample_path)
+                                # print(f"Saved resolution sample to {sample_path}")
                             # ---------------------------------
                             img_bytes = pix.tobytes("png")
                             
@@ -584,18 +493,12 @@ if __name__ == "__main__":
                     # If we bypassed LLM earlier but hit an image, we need to initialize it now
                     if args.text_only and llm is None and openai_client is None:
                         try:
-                            if args.python_api:
-                                init_llm()
-                            else:
-                                start_llama_cpp_server()
+                            start_llama_cpp_server()
                         except Exception as e:
                             print(f"Failed to initialize server: {e}")
                             sys.exit(1)
                             
-                    if args.python_api:
-                        llm_transcribed_texts = transcribe_pages_python_api(messages_batch, input_path)
-                    else:
-                        llm_transcribed_texts = transcribe_pages_openai_api(messages_batch, input_path)
+                    llm_transcribed_texts = transcribe_pages_openai_api(messages_batch, input_path)
                         
                     if not args.text_only:
                         transcribed_texts = llm_transcribed_texts
@@ -645,7 +548,3 @@ if __name__ == "__main__":
             print(f"Warning: {wake_style_file} not found. Skipping PDF generation.")
 
 
-
-    # Ensure cleanup on exit for python API
-    if args.python_api:
-        cleanup_llm()

@@ -1,7 +1,7 @@
 from openai import OpenAI
 import base64
 import os
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 import mimetypes
 
 # Configured by environment variables
@@ -137,7 +137,7 @@ def process_input(input_path, max_pages=None):
     if mime_type == 'application/pdf':
         print(f"Processing PDF: {input_path}")
         try:
-            doc = fitz.open(input_path)
+            doc = pymupdf.open(input_path)
             total_pages = max_pages if max_pages else len(doc)
             for i, page in enumerate(doc[:total_pages]):
                 print(f"  - Processing page {i+1}/{total_pages}...")
@@ -149,7 +149,7 @@ def process_input(input_path, max_pages=None):
 
                 # Render page to image (zoom=3 for high resolution ~216 DPI)
                 zoom = 3.0
-                mat = fitz.Matrix(zoom, zoom)
+                mat = pymupdf.Matrix(zoom, zoom)
                 pix = page.get_pixmap(matrix=mat)
                 img_bytes = pix.tobytes("png")
                 

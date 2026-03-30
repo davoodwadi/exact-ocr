@@ -98,9 +98,9 @@ if [[ $YES -eq 0 ]]; then
     echo "Selected for conversion (${#selected[@]}):"
     printf '  %s\n' "${selected[@]}"
     echo ""
-    read -r -p "Proceed? [y/N] " confirm
+        read -r -p "Proceed? [Y/n] " confirm
     case "$confirm" in
-        [yY][eE][sS]|[yY]) ;;
+            ""|[yY][eE][sS]|[yY]) ;;
         *)
             echo "Aborted."
             exit 0
