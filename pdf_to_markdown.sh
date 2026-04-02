@@ -9,13 +9,11 @@ SCRIPT_PATH="/home/dw/github/pdf-to-markdown/ocr/transcribe_qwen.py"
 # ---------------------------------------------------------------------------
 # Parse script-level flags (consume before passing remainder to Python script)
 # ---------------------------------------------------------------------------
-YES=0
 SHOW_DONE=0
 PASSTHROUGH=()
 
 for arg in "$@"; do
     case "$arg" in
-        --yes|-y)   YES=1 ;;
         --show-done) SHOW_DONE=1 ;;
         *)          PASSTHROUGH+=("$arg") ;;
     esac
@@ -91,25 +89,7 @@ if [[ ${#selected[@]} -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Confirm before processing (skip with --yes)
-# ---------------------------------------------------------------------------
-if [[ $YES -eq 0 ]]; then
-    echo ""
-    echo "Selected for conversion (${#selected[@]}):"
-    printf '  %s\n' "${selected[@]}"
-    echo ""
-        read -r -p "Proceed? [Y/n] " confirm
-    case "$confirm" in
-            ""|[yY][eE][sS]|[yY]) ;;
-        *)
-            echo "Aborted."
-            exit 0
-            ;;
-    esac
-fi
-
-# ---------------------------------------------------------------------------
-# 5. Process selection in a single batch invocation
+# 4. Process selection in a single batch invocation
 # ---------------------------------------------------------------------------
 total=${#selected[@]}
 

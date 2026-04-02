@@ -44,6 +44,7 @@ openai_client = None
 LCPP_PORT = 8080
 
 MODEL_NAME = 'Qwen3.5-35B-A3B'
+# MODEL_NAME = 'Qwen3.5-2B'
 # MODEL_NAME = 'Qwen3.5-0.8B'
 
 max_model_length = 20000
@@ -191,8 +192,10 @@ Available images:
 
 **Exclude (Do NOT transcribe):**
 - The header at the top
-- The entire metadata (e.g., "Target Article", citation details, dates, "Keywords", and the "What is Open Peer Commentary?" box)
-- The footer (e.g., "© Cambridge University Press 2019", logos)
+- The entire metadata (e.g., citation details, author biographies)
+- Footers
+
+Remember to only transcribe the main body of the paper.
 
 Output ONLY the final transcribed text. Do not include explanations or any other text."""
                 }
@@ -353,7 +356,7 @@ def transcribe_single_page_openai(message):
         return ""
 
 def transcribe_pages_openai_api(messages_batch, input_path):
-    print(f"Running VLLM batch inference on {len(messages_batch)} pages (OpenAI API)...")
+    print(f"Running batch inference on {len(messages_batch)} pages...")
     transcribed_texts = []
     
     # Use ThreadPoolExecutor to run requests concurrently
@@ -375,7 +378,11 @@ if __name__ == "__main__":
     parser.add_argument('-m',"--max-pages", type=int, default=None, help="Maximum number of pages to process (for PDFs).")
     parser.add_argument('-f',"--force", action="store_true", help="Force retranscribe if md file exists")
     parser.add_argument('-t', "--text-only", action="store_true", help="Bypass LLM and extract raw text from PDF directly")
+    parser.add_argument('-s', "--size", type=str, default="large", help="Size of LLM used: 'large' | 'small'")
     args = parser.parse_args()
+
+    if args.size=='small':
+        MODEL_NAME = 'Qwen3.5-2B'
 
     # Path to wake-style.css relative to this script
     wake_style_file = Path(__file__).resolve().parent.parent / 'wake-style.css'
