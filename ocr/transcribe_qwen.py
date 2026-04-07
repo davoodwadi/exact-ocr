@@ -118,8 +118,7 @@ def start_llama_cpp_server():
         elif MODEL_NAME in p.name:
             model_info['MODEL_NAME'] = p.as_posix()
     # print('model_info', model_info)
-    # exit()
-    cmd = [
+    cmd = [ 
         os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
         "-m", model_info['MODEL_NAME'],
         "--mmproj", model_info['mmproj'],
