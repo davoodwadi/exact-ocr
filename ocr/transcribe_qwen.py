@@ -147,7 +147,6 @@ def start_llama_cpp_server():
 
     print('cmd', cmd)
 
-    # exit()
     # Redirect server logs to a file to avoid cluttering the terminal
     lcpp_log_path = Path(f"/tmp/llama-server-{LCPP_PORT}.log")
     lcpp_log_file = open(lcpp_log_path, "w")
