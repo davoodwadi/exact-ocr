@@ -45,10 +45,14 @@ LCPP_PORT = 8080
 
 # MODEL_NAME = 'gemma-4-E2B-it'
 # MODEL_NAME = 'gemma-4-E4B-it'
-MODEL_NAME = 'gemma-4-26B-A4B-it'
+# MODEL_NAME = 'gemma-4-26B-A4B-it'
+# MODEL_NAME = 'gemma-4-26B-A4B-it'
+MODEL_NAME = 'gemma-4-31B-it'
 # MODEL_NAME = 'Qwen3.5-35B-A3B'
 # MODEL_NAME = 'Qwen3.5-2B'
 # MODEL_NAME = 'Qwen3.5-0.8B'
+
+MAX_WORKERS = '4'
 
 max_model_length = 20000
 max_tokens = 16000
@@ -82,6 +86,11 @@ def attach_existing_llama_cpp_server(port=8080):
         pass
     return False
 
+def llama_cpp_logs():
+    logfile = '/tmp/llama-server-8080.log'
+    with open(logfile) as f:
+        logs = f.read()
+    return logs
 def start_llama_cpp_server():
     global lcpp_process, openai_client, LCPP_PORT
 
@@ -115,16 +124,30 @@ def start_llama_cpp_server():
         "-m", model_info['MODEL_NAME'],
         "--mmproj", model_info['mmproj'],
         "--port", str(LCPP_PORT),
-        "--parallel", "4",
-        "--chat-template-kwargs", '{"enable_thinking":false}',
+        "--reasoning", 'off',
     ]
     if 'gemma-4' in MODEL_NAME.lower():
         cmd.extend([
             '--image-min-tokens', '1120', 
             '--image-max-tokens', '1120', 
-            '--ubatch-size', '2048', 
+            '--ubatch-size', str(4096), 
+            '--cache-type-k', 'q4_0',
+            '--cache-type-v', 'q4_0',
+            '--batch-size', str(4096),
+
+            # '--ctx-size', '14192',
+            '--ctx-size', '15000',
+            '--flash-attn', 'on',
         ])
-    # print('cmd', cmd)
+        if '31b' in MODEL_NAME.lower():
+            MAX_WORKERS = '2'
+
+        cmd.extend([
+        "--parallel", MAX_WORKERS,
+        ])
+
+    print('cmd', cmd)
+
     # exit()
     # Redirect server logs to a file to avoid cluttering the terminal
     lcpp_log_path = Path(f"/tmp/llama-server-{LCPP_PORT}.log")
@@ -147,6 +170,7 @@ def start_llama_cpp_server():
         except Exception:
             if lcpp_process.poll() is not None:
                 print("llama-server process terminated unexpectedly.")
+                print(llama_cpp_logs())
                 sys.exit(1)
             time.sleep(4)
             
@@ -156,7 +180,8 @@ def start_llama_cpp_server():
         sys.exit(1)
         
     print("llama-server is ready!")
-
+    print(llama_cpp_logs())
+    
 def stop_llama_cpp_server():
     global lcpp_process
     if lcpp_process is not None:
@@ -354,7 +379,8 @@ def extract_metadata_openai_api(text, image):
         print(f"Error extracting metadata via OpenAI API: {error_msg}")
         return {}
 
-def transcribe_single_page_openai(message):
+def transcribe_single_page_openai(args):
+    page_idx, message = args
     try:
         response = openai_client.chat.completions.create(
             model=MODEL_NAME,
@@ -371,8 +397,8 @@ def transcribe_single_page_openai(message):
         )
         # print(response.choices[0].message.content)
         if response.choices[0].finish_reason!='stop':
-            print(f'Page incomplete with {response.choices[0].finish_reason}')
-        print(response.choices[0].finish_reason)
+            print(f'Page {page_idx} incomplete with {response.choices[0].finish_reason}')
+        print(f"Page {page_idx} finish reason: {response.choices[0].finish_reason}")
         return response.choices[0].message.content
     except Exception as e:
         error_msg = str(e)
@@ -381,16 +407,19 @@ def transcribe_single_page_openai(message):
                 error_msg += f" - Response: {e.response.json()}"
             except Exception:
                 error_msg += f" - Response (raw): {e.response.text}"
-        print(f"Error transcribing page via OpenAI API: {error_msg}")
+        print(f"Error transcribing page {page_idx} via OpenAI API: {error_msg}")
         return ""
 
 def transcribe_pages_openai_api(messages_batch, input_path):
     print(f"Running batch inference on {len(messages_batch)} pages...")
     transcribed_texts = []
     
+    # Prepare arguments with page numbers
+    items = [(i + 1, msg) for i, msg in enumerate(messages_batch)]
+    
     # Use ThreadPoolExecutor to run requests concurrently
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(tqdm(executor.map(transcribe_single_page_openai, messages_batch), total=len(messages_batch), desc=f"Transcribing {input_path.name}"))
+    with ThreadPoolExecutor(max_workers=int(MAX_WORKERS)) as executor:
+        results = list(tqdm(executor.map(transcribe_single_page_openai, items), total=len(items), desc=f"Transcribing {input_path.name}"))
         
     for generated_text in results:
         if generated_text and "</think>" in generated_text:
