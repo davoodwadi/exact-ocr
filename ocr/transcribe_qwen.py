@@ -43,7 +43,10 @@ lcpp_process = None
 openai_client = None
 LCPP_PORT = 8080
 
-MODEL_NAME = 'Qwen3.5-35B-A3B'
+# MODEL_NAME = 'gemma-4-E2B-it'
+# MODEL_NAME = 'gemma-4-E4B-it'
+MODEL_NAME = 'gemma-4-26B-A4B-it'
+# MODEL_NAME = 'Qwen3.5-35B-A3B'
 # MODEL_NAME = 'Qwen3.5-2B'
 # MODEL_NAME = 'Qwen3.5-0.8B'
 
@@ -95,14 +98,34 @@ def start_llama_cpp_server():
 
     env = os.environ.copy()
     cache_dir = os.environ.get('LLAMA_CACHE')
+    cache_dir_path = Path(cache_dir)
+    model_dir = next(p for p in cache_dir_path.iterdir() if MODEL_NAME in p.name)
+    # print('model_dir', list(model_dir.iterdir()))
+    # print()
+    model_info=dict()
+    for p in model_dir.iterdir():
+        if 'mmproj' in p.name:
+            model_info['mmproj'] = p.as_posix()
+        elif MODEL_NAME in p.name:
+            model_info['MODEL_NAME'] = p.as_posix()
+    # print('model_info', model_info)
+    # exit()
     cmd = [
         os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
-        "-m", f"{cache_dir}/{MODEL_NAME}-GGUF/{MODEL_NAME}-UD-Q4_K_XL.gguf",
-        "--mmproj", f"{cache_dir}/{MODEL_NAME}-GGUF/mmproj-BF16.gguf",
+        "-m", model_info['MODEL_NAME'],
+        "--mmproj", model_info['mmproj'],
         "--port", str(LCPP_PORT),
         "--parallel", "4",
+        "--chat-template-kwargs", '{"enable_thinking":false}',
     ]
-    
+    if 'gemma-4' in MODEL_NAME.lower():
+        cmd.extend([
+            '--image-min-tokens', '1120', 
+            '--image-max-tokens', '1120', 
+            '--ubatch-size', '2048', 
+        ])
+    # print('cmd', cmd)
+    # exit()
     # Redirect server logs to a file to avoid cluttering the terminal
     lcpp_log_path = Path(f"/tmp/llama-server-{LCPP_PORT}.log")
     lcpp_log_file = open(lcpp_log_path, "w")
@@ -158,20 +181,36 @@ def prepare_page_messages(base64_image, mime_type="image/png", extracted_images=
     """Prepares the message list for a single page."""
     
     image_section = ""
-    extracted_images = [Path(ei).name for ei in extracted_images]
-    # print(extracted_images)
+#     extracted_images = [Path(ei).name for ei in extracted_images]
 
-    if extracted_images:
-        img_list = "\n".join([f"- {os.path.basename(img)}" for img in extracted_images])
-        image_section = f"""
-**Images:**
-The following images have been extracted from this page. If they are figures, charts, or diagrams relevant to the content, insert them at the appropriate location using `![Description](<filename>)`.
-Do NOT include logos, icons, or decorative elements.
-Available images:
-{img_list}
-"""
+#     if extracted_images:
+#         img_list = "\n".join([f"- {os.path.basename(img)}" for img in extracted_images])
+#         image_section = f"""
+# **Images:**
+# The following images have been extracted from this page. If they are figures, charts, or diagrams relevant to the content, insert them at the appropriate location using `![Description](<filename>)`.
+# Do NOT include logos, icons, or decorative elements.
+# Available images:
+# {img_list}
+# """
+
+
+    user_message = f"""Transcribe the main article body from this image.
+
+**Include:**
+- The main text content
+- **Tables**: Convert all tables into standard Markdown tables.
+{image_section}
+
+**Exclude (Do NOT transcribe):**
+- The page metadata (e.g., author biographies, footnotes, etc.)
+
+Remember to only transcribe the main body of the paper, verbatim.
+Output ONLY the final transcribed text, exactly as it appears. Do not include explanations or any other text."""
 
     messages = [
+        # {
+        #     'role':'system', 'content':system_message
+        # },
         {
             "role": "user",
             "content": [
@@ -183,21 +222,7 @@ Available images:
                 },
                 {
                     "type": "text",
-                    "text": f"""Transcribe the main article body from this image.
-
-**Include:**
-- The main text content
-- **Tables**: Convert all tables into standard Markdown tables.
-{image_section}
-
-**Exclude (Do NOT transcribe):**
-- The header at the top
-- The entire metadata (e.g., citation details, author biographies)
-- Footers
-
-Remember to only transcribe the main body of the paper.
-
-Output ONLY the final transcribed text. Do not include explanations or any other text."""
+                    "text": user_message
                 }
             ]
         }
@@ -280,7 +305,7 @@ def extract_metadata_openai_api(text, image):
     """
     Extracts metadata from the text using the OpenAI API.
     """
-    print("Extracting metadata (Title/Author) via OpenAI API...")
+    # print("Extracting metadata (Title/Author) via OpenAI API...")
     system_prompt = 'Extract the metadata from the user text. Exactly follow the json schema for your output.'
     messages = [
         {"role": "system", "content": system_prompt},
@@ -335,15 +360,19 @@ def transcribe_single_page_openai(message):
             model=MODEL_NAME,
             messages=message,
             max_tokens=max_tokens,
-            temperature=0.7,
-            top_p=0.8,
-            presence_penalty=1.5,
-            extra_body={
-                "top_k": 20,
-                # "chat_template_kwargs": {"enable_thinking": False},
-            },
+            temperature=0.,
+            # temperature=0.7,
+            # top_p=0.8,
+            # presence_penalty=1.5,
+            # extra_body={
+            #     "top_k": 20,
+            #     # "chat_template_kwargs": {"enable_thinking": False},
+            # },
         )
         # print(response.choices[0].message.content)
+        if response.choices[0].finish_reason!='stop':
+            print(f'Page incomplete with {response.choices[0].finish_reason}')
+        print(response.choices[0].finish_reason)
         return response.choices[0].message.content
     except Exception as e:
         error_msg = str(e)
