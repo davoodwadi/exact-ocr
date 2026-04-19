@@ -24,11 +24,10 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 class Metadata(BaseModel):
-    title: str = Field(description="Title of the paper")
-    author: str = Field(description="Name of author")
-    date: Optional[str] = Field(None, description="Publication date in YYYY-MM-DD format if available, otherwise YYYY")
-    keywords: Optional[List[str]] = Field(None, description="List of keywords")
-    journal: Optional[str] = Field(None, description="Journal or Conference name")
+    title: str = Field(description="The title of the paper. It must be a single line.")
+    author: str = Field(description="Comma separated name of author(s). It must be a single line.")
+    date: Optional[int] = Field(None, description="The year the paper was published, if provided.")
+    journal: Optional[str] = Field(None, description="The name of the journal or conference where the paper was published, if any. It must be a single line.")
 
 try:
     # Pydantic v2
@@ -306,42 +305,56 @@ def extract_images_from_page(doc, page, page_index, output_dir="extracted_images
             
     return saved_images
 
-def get_text_image(doc):
+def get_full_text(doc):
     full_text_for_metadata = ''
-    first_page_image = None
     for i, page in enumerate(doc):
-        if i==0:
+        full_text_for_metadata += page.get_text() + "\n"
+        # Optimization: Stop if we have enough text
+        if len(full_text_for_metadata) > 2000:
+            break
+    return full_text_for_metadata
+
+def get_first_n_page_images(doc, n=2):
+    images = []
+    for i, page in enumerate(doc):
+        if i<n:
             zoom = 3.0
             mat = pymupdf.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=mat)
             img_bytes = pix.tobytes("png")
             # Encode bytes directly without saving to disk
-            first_page_image = base64.b64encode(img_bytes).decode('utf-8')
-            
-        full_text_for_metadata += page.get_text() + "\n"
-        # Optimization: Stop if we have enough text
-        if len(full_text_for_metadata) > 2000:
-            break
-    return full_text_for_metadata, first_page_image
+            page_image = base64.b64encode(img_bytes).decode('utf-8')
+            images.append(page_image)
+    return images
 
-def extract_metadata_openai_api(text, image):
+def extract_metadata_openai_api(text, images):
     """
     Extracts metadata from the text using the OpenAI API.
     """
+    num_pages = len(images)
     # print("Extracting metadata (Title/Author) via OpenAI API...")
-    system_prompt = 'Extract the metadata from the user text. Exactly follow the json schema for your output.'
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user", 
-            "content": [
-                {
-                    "type": "text",
-                    "text": text
-                }
-            ]
-        },
-    ]
+    system_prompt = f'''Extract the metadata from the provided pdf. 
+    The image of {num_pages} pages from the same paper have been provided. 
+    For the journal field, only output the name of the journal or conference, which is only a few words.
+    Each entry MUST be on a single line.
+    Exactly follow the json schema for your output. 
+    Do not output any other text.'''
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    user_content = []
+    # 2. Append each image to the same user message content
+    for base64_image in images:
+        user_content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{base64_image}"
+            }
+        })
+    # user_content.append({
+    #     "type": "text",
+    #     "text": f"{text}"
+    # }) 
+    messages.append({'role':'user', 'content':user_content})    
     
     try:
         response = openai_client.chat.completions.create(
@@ -350,23 +363,20 @@ def extract_metadata_openai_api(text, image):
             response_format={
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "Metadata",
+                    "name": "paper-metadata",
                     "schema": json_schema,
                 }
             },
-            temperature=0.7,
-            top_p=1.0,
-            presence_penalty=2.0,
-            extra_body={
-                "top_k": 40,
-                "repetition_penalty": 1.0,
-                "chat_template_kwargs": {"enable_thinking": False},
-            },
+            extra_body={"chat_template_kwargs": {"enable_thinking": False},},
             max_tokens=max_tokens,
         )
         generated_text = response.choices[0].message.content.strip()
+        print(f"json output metadata:\n{generated_text}")
+        metadata_dict = json.loads(generated_text)
+        clean_data = {k: v[:200] for k, v in metadata_dict.items() if v}
+
         # print('generated_text metadata', generated_text)            
-        return json.loads(generated_text)
+        return clean_data
     except Exception as e:
         error_msg = str(e)
         if hasattr(e, 'response') and hasattr(e.response, 'json'):
@@ -480,11 +490,10 @@ if __name__ == "__main__":
                     if not args.text_only:
                         # Extract metadata using first 1000 chars of full text
                         print("Extracting text for metadata analysis...")
-                        full_text_for_metadata, first_page_image = get_text_image(doc) 
-                        
-                        metadata_dict = extract_metadata_openai_api(text=full_text_for_metadata, image=first_page_image)
+                        full_text_for_metadata = get_full_text(doc) 
+                        first_n_images_list = get_first_n_page_images(doc, n = 2)
+                        clean_data = extract_metadata_openai_api(text=full_text_for_metadata, images=first_n_images_list)
                             
-                        clean_data = {k: v for k, v in metadata_dict.items() if v}
                         yaml_str = yaml.dump(clean_data, allow_unicode=True, default_flow_style=False, sort_keys=False)
                         frontmatter = f"---\n{yaml_str}---\n"
                         print(f"Metadata extracted:\n{frontmatter}")
