@@ -18,6 +18,7 @@ import socket
 import atexit
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import cpu_count
 from openai import OpenAI
 
 from pydantic import BaseModel, Field
@@ -46,11 +47,13 @@ LCPP_PORT = 8080
 # MODEL_NAME = 'gemma-4-E4B-it'
 # MODEL_NAME = 'gemma-4-26B-A4B-it'
 # MODEL_NAME = 'gemma-4-26B-A4B-it'
-MODEL_NAME = 'gemma-4-31B-it'
+
+# MODEL_NAME = 'gemma-4-31B-it'
+MODEL_NAME = 'Qwen3.6-35B-A3B'
+
 # MODEL_NAME = 'Qwen3.5-35B-A3B'
 # MODEL_NAME = 'Qwen3.5-2B'
 # MODEL_NAME = 'Qwen3.5-0.8B'
-
 MAX_WORKERS = '4'
 
 max_model_length = 20000
@@ -91,7 +94,7 @@ def llama_cpp_logs():
         logs = f.read()
     return logs
 def start_llama_cpp_server():
-    global lcpp_process, openai_client, LCPP_PORT
+    global lcpp_process, openai_client, LCPP_PORT, MAX_WORKERS
 
     if lcpp_process is not None:
         return
@@ -123,7 +126,10 @@ def start_llama_cpp_server():
         "--mmproj", model_info['mmproj'],
         "--port", str(LCPP_PORT),
         "--reasoning", 'off',
+        '-ngl', '99',
+        '--threads', str(cpu_count()),
     ]
+
     if 'gemma-4' in MODEL_NAME.lower():
         cmd.extend([
             '--image-min-tokens', '1120', 
@@ -140,9 +146,10 @@ def start_llama_cpp_server():
         if '31b' in MODEL_NAME.lower():
             MAX_WORKERS = '2'
 
-        cmd.extend([
-        "--parallel", MAX_WORKERS,
-        ])
+    cmd.extend([
+    "--parallel", MAX_WORKERS,
+    ])
+
 
     print('cmd', cmd)
 
