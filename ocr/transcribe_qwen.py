@@ -44,13 +44,31 @@ openai_client = None
 LCPP_PORT = 8080
 
 MODEL = {
-    'name': "gemma-4-26B-A4B-it",
+    'name': "Muse-Glimmer-30B-GGUF",
     "sampling_params": {
-        'temp': 1.0,
-        'top-p': 0.95,
-        'top-k': 64
+        '--temp': "1.0",
+        '--top-p': "0.95",
+        '--top-k': "64"
     }
 }
+
+MODEL = {
+    'name': "Qwen3.8-27B-GGUF",
+    "sampling_params": {
+        '--temp': "0.7",
+        '--top-p': "0.80",
+        '--top-k': "20",
+        '--min-p': "0.0",
+        '--frequency-penalty': "1.5",
+        '--repeat-penalty': "1.0",
+    }
+}
+
+# MODEL = {
+#     'name': "Qwen3.6-35B-A3B",
+#     "sampling_params": {
+#     }
+# }
 MODEL_NAME = MODEL['name']
 
 # MODEL_NAME = 'gemma-4-31B-it'
@@ -84,25 +102,7 @@ def prepare_completion_kwargs(extra_body_override=None, default_temp=None):
     extra_body = {}
     if extra_body_override:
         extra_body.update(extra_body_override)
-        
-    sampling_params = get_sampling_params()
-    
-    for key, val in sampling_params.items():
-        key_lower = key.lower().replace('-', '_')
-        if key_lower in ('temp', 'temperature'):
-            kwargs['temperature'] = val
-        elif key_lower in ('top_p', 'topp'):
-            kwargs['top_p'] = val
-        elif key_lower == 'presence_penalty':
-            kwargs['presence_penalty'] = val
-        elif key_lower == 'frequency_penalty':
-            kwargs['frequency_penalty'] = val
-        else:
-            extra_body[key_lower] = val
-            
-    if 'temperature' not in kwargs and default_temp is not None:
-        kwargs['temperature'] = default_temp
-        
+
     if extra_body:
         kwargs['extra_body'] = extra_body
         
@@ -161,20 +161,32 @@ def start_llama_cpp_server():
     model_name = get_model_name()
 
     print(f"Starting llama-server on port {LCPP_PORT} for model {model_name}...")
+    # print(f"Starting llama-server on port {LCPP_PORT} for model {model_name}...")
 
     env = os.environ.copy()
+
     cache_dir = os.environ.get('LLAMA_CACHE')
     cache_dir_path = Path(cache_dir)
-    model_dir = next(p for p in cache_dir_path.iterdir() if model_name in p.name)
-    # print('model_dir', list(model_dir.iterdir()))
-    # print()
+    model_dir = [p for p in cache_dir_path.iterdir() if model_name in p.name]
     model_info=dict()
-    for p in model_dir.iterdir():
-        if 'mmproj' in p.name:
-            model_info['mmproj'] = p.as_posix()
-        elif model_name in p.name:
-            model_info['MODEL_NAME'] = p.as_posix()
-    print('model_info', model_info)
+    if model_dir:
+        for p in model_dir[0].iterdir():
+            if 'mmproj' in p.name:
+                model_info['mmproj'] = p.as_posix()
+            elif model_name in p.name:
+                model_info['MODEL_NAME'] = p.as_posix()
+    else:
+        # search hf cache
+        cache_dir_HF = os.environ.get('HF_HOME')
+        cache_dir_HF_path = Path(cache_dir_HF)
+        model_dir = [p for p in cache_dir_HF_path.iterdir() if model_name.lower() in p.name.lower()][0]
+        model_dir = next((model_dir/'snapshots').iterdir())
+        for p in model_dir.iterdir():
+            if 'mmproj' in p.name:
+                model_info['mmproj'] = p.as_posix()
+            else:
+                model_info['MODEL_NAME'] = p.as_posix()
+    # print('model_info', model_info)
 
     cmd = [ 
         os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
@@ -185,6 +197,13 @@ def start_llama_cpp_server():
         "--reasoning", 'off',
         '--flash-attn', 'on',
     ]
+
+    sampling_params = get_sampling_params()
+    sampling_params_list = [] 
+    for k,v in sampling_params.items():
+        sampling_params_list.extend([k, v])
+    cmd.extend(sampling_params_list)
+
     if model_info.get('mmproj'):
         cmd.extend([
             "--mmproj", model_info['mmproj'],
@@ -435,8 +454,10 @@ def extract_metadata_openai_api(text, images):
     messages.append({'role':'user', 'content':user_content})    
     
     try:
+        completion_kwargs = prepare_completion_kwargs(
+            extra_body_override={"chat_template_kwargs": {"enable_thinking": False}}
+        )
         response = openai_client.chat.completions.create(
-            model=MODEL_NAME,
             messages=messages,
             response_format={
                 "type": "json_schema",
@@ -445,8 +466,7 @@ def extract_metadata_openai_api(text, images):
                     "schema": json_schema,
                 }
             },
-            extra_body={"chat_template_kwargs": {"enable_thinking": False},},
-            max_tokens=max_tokens,
+            **completion_kwargs
         )
         generated_text = response.choices[0].message.content.strip()
         print(f"json output metadata:\n{generated_text}")
@@ -468,18 +488,10 @@ def extract_metadata_openai_api(text, images):
 def transcribe_single_page_openai(args):
     page_idx, message = args
     try:
+        completion_kwargs = prepare_completion_kwargs(default_temp=1.0)
         response = openai_client.chat.completions.create(
-            model=MODEL_NAME,
             messages=message,
-            max_tokens=max_tokens,
-            temperature=0.,
-            # temperature=0.7,
-            # top_p=0.8,
-            # presence_penalty=1.5,
-            # extra_body={
-            #     "top_k": 20,
-            #     # "chat_template_kwargs": {"enable_thinking": False},
-            # },
+            **completion_kwargs
         )
         # print(response.choices[0].message.content)
         if response.choices[0].finish_reason!='stop':
@@ -517,8 +529,8 @@ def transcribe_pages_openai_api(messages_batch, input_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe PDF or Image to Markdown using Qwen (VLLM).")
     parser.add_argument("input_paths", nargs='+', help="Paths to the input files (PDF or Image).")
-    parser.add_argument("-e", "--epub", type=bool, default=False, help="Should produce epub?")
-    parser.add_argument("-w", "--wake", type=bool, default=False, help="Should produce wake-style manuscript PDF file?")
+    parser.add_argument("-e", "--epub", action="store_true", help="Should produce epub?")
+    parser.add_argument("-w", "--wake", action="store_true", help="Should produce wake-style manuscript PDF file?")
     parser.add_argument('-m',"--max-pages", type=int, default=None, help="Maximum number of pages to process (for PDFs).")
     parser.add_argument('-f',"--force", action="store_true", help="Force retranscribe if md file exists")
     parser.add_argument('-t', "--text-only", action="store_true", help="Bypass LLM and extract raw text from PDF directly")
@@ -526,6 +538,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.size=='small':
+        if isinstance(MODEL, dict):
+            MODEL['name'] = 'Qwen3.5-2B'
+        else:
+            MODEL = {'name': 'Qwen3.5-2B', 'sampling_params': {}}
         MODEL_NAME = 'Qwen3.5-2B'
 
     # Path to wake-style.css relative to this script
