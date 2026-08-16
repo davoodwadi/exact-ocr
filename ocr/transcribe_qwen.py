@@ -43,13 +43,19 @@ lcpp_process = None
 openai_client = None
 LCPP_PORT = 8080
 
-# MODEL_NAME = 'gemma-4-E2B-it'
-# MODEL_NAME = 'gemma-4-E4B-it'
-# MODEL_NAME = 'gemma-4-26B-A4B-it'
-# MODEL_NAME = 'gemma-4-26B-A4B-it'
+MODEL = {
+    'name': "gemma-4-26B-A4B-it",
+    "sampling_params": {
+        'temp': 1.0,
+        'top-p': 0.95,
+        'top-k': 64
+    }
+}
+MODEL_NAME = MODEL['name']
 
 # MODEL_NAME = 'gemma-4-31B-it'
-MODEL_NAME = 'Qwen3.6-35B-A3B'
+# MODEL_NAME = 'Qwen3.6-35B-A3B'
+# MODEL_NAME = 'Nemotron-3-Nano-30B-A3B'
 
 # MODEL_NAME = 'Qwen3.5-35B-A3B'
 # MODEL_NAME = 'Qwen3.5-2B'
@@ -58,6 +64,49 @@ MAX_WORKERS = '4'
 
 max_model_length = 20000
 max_tokens = 16000
+
+def get_model_name():
+    if isinstance(MODEL, dict):
+        return MODEL.get('name', 'gemma-4-26B-A4B-it')
+    return MODEL
+
+def get_sampling_params():
+    if isinstance(MODEL, dict):
+        return MODEL.get('sampling_params', {})
+    return {}
+
+def prepare_completion_kwargs(extra_body_override=None, default_temp=None):
+    kwargs = {
+        "model": get_model_name(),
+        "max_tokens": max_tokens,
+    }
+    
+    extra_body = {}
+    if extra_body_override:
+        extra_body.update(extra_body_override)
+        
+    sampling_params = get_sampling_params()
+    
+    for key, val in sampling_params.items():
+        key_lower = key.lower().replace('-', '_')
+        if key_lower in ('temp', 'temperature'):
+            kwargs['temperature'] = val
+        elif key_lower in ('top_p', 'topp'):
+            kwargs['top_p'] = val
+        elif key_lower == 'presence_penalty':
+            kwargs['presence_penalty'] = val
+        elif key_lower == 'frequency_penalty':
+            kwargs['frequency_penalty'] = val
+        else:
+            extra_body[key_lower] = val
+            
+    if 'temperature' not in kwargs and default_temp is not None:
+        kwargs['temperature'] = default_temp
+        
+    if extra_body:
+        kwargs['extra_body'] = extra_body
+        
+    return kwargs
 
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -71,7 +120,7 @@ def find_free_port(start_port=8000):
 
 def attach_existing_llama_cpp_server(port=8080):
     """Check if a llama-server is already running on the given port and attach to it."""
-    global openai_client, LCPP_PORT, MODEL_NAME
+    global openai_client, LCPP_PORT, MODEL_NAME, MODEL
     if not is_port_in_use(port):
         return False
     try:
@@ -82,6 +131,10 @@ def attach_existing_llama_cpp_server(port=8080):
             print(f"Found existing llama-server on port {port} running model '{running_model}'. Attaching to it.")
             LCPP_PORT = port
             MODEL_NAME = running_model
+            if isinstance(MODEL, dict):
+                MODEL['name'] = running_model
+            else:
+                MODEL = {'name': running_model, 'sampling_params': {}}
             openai_client = client
             return True
     except Exception:
@@ -90,7 +143,7 @@ def attach_existing_llama_cpp_server(port=8080):
 
 def llama_cpp_logs():
     logfile = '/tmp/llama-server-8080.log'
-    with open(logfile) as f:
+    with open(logfile, encoding='utf-8', errors='replace') as f:
         logs = f.read()
     return logs
 def start_llama_cpp_server():
@@ -99,38 +152,45 @@ def start_llama_cpp_server():
     if lcpp_process is not None:
         return
 
+    kill_existing_llama_servers()
     # Reuse an already-running server if available on the default port
-    if attach_existing_llama_cpp_server(8080):
-        return
+    # if attach_existing_llama_cpp_server(8080):
+    #     return
 
     LCPP_PORT = find_free_port(8080)
+    model_name = get_model_name()
 
-    print(f"Starting llama-server on port {LCPP_PORT} for model {MODEL_NAME}...")
+    print(f"Starting llama-server on port {LCPP_PORT} for model {model_name}...")
 
     env = os.environ.copy()
     cache_dir = os.environ.get('LLAMA_CACHE')
     cache_dir_path = Path(cache_dir)
-    model_dir = next(p for p in cache_dir_path.iterdir() if MODEL_NAME in p.name)
+    model_dir = next(p for p in cache_dir_path.iterdir() if model_name in p.name)
     # print('model_dir', list(model_dir.iterdir()))
     # print()
     model_info=dict()
     for p in model_dir.iterdir():
         if 'mmproj' in p.name:
             model_info['mmproj'] = p.as_posix()
-        elif MODEL_NAME in p.name:
+        elif model_name in p.name:
             model_info['MODEL_NAME'] = p.as_posix()
-    # print('model_info', model_info)
+    print('model_info', model_info)
+
     cmd = [ 
         os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
         "-m", model_info['MODEL_NAME'],
-        "--mmproj", model_info['mmproj'],
         "--port", str(LCPP_PORT),
-        "--reasoning", 'off',
         '-ngl', '99',
         '--threads', str(cpu_count()),
+        "--reasoning", 'off',
+        '--flash-attn', 'on',
     ]
+    if model_info.get('mmproj'):
+        cmd.extend([
+            "--mmproj", model_info['mmproj'],
+        ])
 
-    if 'gemma-4' in MODEL_NAME.lower():
+    if 'gemma-4' in model_name.lower():
         cmd.extend([
             '--image-min-tokens', '1120', 
             '--image-max-tokens', '1120', 
@@ -141,9 +201,8 @@ def start_llama_cpp_server():
 
             # '--ctx-size', '14192',
             '--ctx-size', '15000',
-            '--flash-attn', 'on',
         ])
-        if '31b' in MODEL_NAME.lower():
+        if '31b' in model_name.lower():
             MAX_WORKERS = '2'
 
     cmd.extend([
@@ -152,6 +211,7 @@ def start_llama_cpp_server():
 
 
     print('cmd', cmd)
+    # exit()
 
     # Redirect server logs to a file to avoid cluttering the terminal
     lcpp_log_path = Path(f"/tmp/llama-server-{LCPP_PORT}.log")
@@ -185,7 +245,18 @@ def start_llama_cpp_server():
         
     print("llama-server is ready!")
     print(llama_cpp_logs())
-    
+
+def kill_existing_llama_servers():
+    """Finds and kills any hanging llama-server processes from previous runs."""
+    print("Ensuring no old llama-server processes are running...")
+    try:
+        # forcefully kill any process with 'llama-server' in its command line
+        subprocess.run(["pkill", "-9", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Give the OS a moment to free up the ports
+        time.sleep(1)
+    except Exception as e:
+        print(f"Warning: Could not kill existing servers: {e}")
+
 def stop_llama_cpp_server():
     global lcpp_process
     if lcpp_process is not None:
@@ -210,17 +281,17 @@ def prepare_page_messages(base64_image, mime_type="image/png", extracted_images=
     """Prepares the message list for a single page."""
     
     image_section = ""
-#     extracted_images = [Path(ei).name for ei in extracted_images]
+    extracted_images = [Path(ei).name for ei in extracted_images]
 
-#     if extracted_images:
-#         img_list = "\n".join([f"- {os.path.basename(img)}" for img in extracted_images])
-#         image_section = f"""
-# **Images:**
-# The following images have been extracted from this page. If they are figures, charts, or diagrams relevant to the content, insert them at the appropriate location using `![Description](<filename>)`.
-# Do NOT include logos, icons, or decorative elements.
-# Available images:
-# {img_list}
-# """
+    if extracted_images:
+        img_list = "\n".join([f"- {os.path.basename(img)}" for img in extracted_images])
+        image_section = f"""
+**Images:**
+The following images have been extracted from this page. If they are figures, charts, or diagrams relevant to the content, insert them at the appropriate location using `![Description](<filename>)`.
+Do NOT include logos, icons, or decorative elements.
+Available images:
+{img_list}
+"""
 
 
     user_message = f"""Transcribe the main article body from this image.
@@ -475,6 +546,8 @@ if __name__ == "__main__":
                 # Init LLM early based on mode
                 try:
                     start_llama_cpp_server()
+                    # stop_llama_cpp_server()
+                    # print('stopped the server')
                 except Exception as e:
                     print(f"Failed to initialize server: {e}")
                     sys.exit(1)
@@ -614,8 +687,9 @@ if __name__ == "__main__":
                 except subprocess.CalledProcessError as e:
                     print(f"Error generating PDF with pandoc: {e}")
             if args.epub:
-                output_path_epub = input_path.parent/f"{output_stem}.epub"        
-                EPUB_CMD = f'pandoc "{output_path_md}" -o "{output_path_epub}" --css "{wake_style_file.as_posix()}" --resource-path=".:{images_dir}" --metadata lang="en-US"'
+                output_path_epub = input_path.parent/f"{output_stem}.epub"
+                kindle_style_file = Path(__file__).resolve().parent.parent / 'kindle-style.css'        
+                EPUB_CMD = f'pandoc "{output_path_md}" -o "{output_path_epub}" --css "{kindle_style_file.as_posix()}" --resource-path=".:{images_dir}" --metadata lang="en-US" --toc'
                 # EPUB_CMD = f"pandoc {output_path} -o {epub_path} --css {wake_style_file.as_posix()} --resource-path=.:{images_dir}"
                 print(f"Executing: {EPUB_CMD}")
                 try:
